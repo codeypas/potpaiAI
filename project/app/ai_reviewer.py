@@ -1,134 +1,72 @@
-import logging
-from typing import List, Dict, Any
 import json
+import logging
+from typing import Dict, List, Optional
 from openai import OpenAI
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 class AICodeReviewer:
-    def __init__(self):
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.model = "gpt-4o-mini"
+    """AI-powered code review agent"""
     
-    def analyze_code(self, file_name: str, file_content: str, diff: str = None) -> Dict[str, Any]:
-        """Analyze code file using OpenAI and return structured review"""
+    def __init__(self, api_key: str):
+        self.client = OpenAI(api_key=api_key)
+        self.model = "gpt-4-turbo-preview"
+    
+    def analyze_code(self, file_content: str, file_name: str) -> Dict:
+        """
+        Analyze code for issues using AI
+        Returns:
+        {
+            "name": filename,
+            "issues": [
+                {
+                    "type": "style|bug|performance|best_practice",
+                    "line": int,
+                    "description": str,
+                    "suggestion": str
+                }
+            ]
+        }
+        """
         try:
-            prompt = self._build_prompt(file_name, file_content, diff)
-            
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert code reviewer. Analyze code and return ONLY valid JSON output."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=0.3,
-                max_tokens=2000
-            )
-            
-            response_text = response.choices[0].message.content.strip()
-            
-            import re
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-            if json_match:
-                result = json.loads(json_match.group())
-            else:
-                result = json.loads(response_text)
-            
-            return result
-        except json.JSONDecodeError:
-            logger.error(f"Failed to parse JSON response for {file_name}")
-            return {"issues": []}
-        except Exception as e:
-            logger.error(f"Error analyzing code: {str(e)}")
-            raise
-    
-    def _build_prompt(self, file_name: str, file_content: str, diff: str = None) -> str:
-        """Build prompt for code review"""
-        prompt = f"""
-Analyze the following code file for issues and return ONLY a valid JSON object.
-
+            # Properly closed triple-quoted string
+            prompt = f"""Analyze the following code file and identify issues.
 File: {file_name}
 
-{f"Diff:" if diff else ""}
-{diff if diff else ""}
-
 Code:
-{file_content[:5000]}  # Limit to first 5000 chars
+{file_content}
 
-Return ONLY this JSON structure (no markdown, no extra text):
+For each issue, provide:
+- type (style, bug, performance, best_practice)
+- line number
+- description
+- suggestion
+Return the response in JSON format like this:
 {{
+    "name": "{file_name}",
     "issues": [
         {{
-            "type": "style|bug|performance|best_practice",
-            "line": <line number>,
-            "description": "Issue description",
-            "suggestion": "How to fix"
+            "type": "style",
+            "line": 1,
+            "description": "Example issue",
+            "suggestion": "Example suggestion"
         }}
     ]
 }}
-
-Focus on:
-1. Style issues (formatting, naming conventions)
-2. Bugs (null checks, error handling, logic errors)
-3. Performance issues (inefficient algorithms, memory leaks)
-4. Best practices (design patterns, security)
-
-Be concise. Return only the JSON.
 """
-        return prompt
-    
-    def review_pr_files(self, files_data: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Review all files in PR and return summary"""
-        files_reviews = []
-        total_issues = 0
-        critical_issues = 0
-        
-        for file_info in files_data:
-            if file_info["filename"].endswith((".md", ".txt", ".json", ".yaml", ".yml")):
-                continue
-            
-            try:
-                file_content = file_info.get("patch", "")
-                if not file_content:
-                    continue
-                
-                review = self.analyze_code(
-                    file_info["filename"],
-                    file_info.get("raw", ""),
-                    file_content
-                )
-                
-                issues = review.get("issues", [])
-                
-                file_review = {
-                    "name": file_info["filename"],
-                    "issues": issues
-                }
-                
-                files_reviews.append(file_review)
-                
-                total_issues += len(issues)
-                critical_issues += sum(1 for issue in issues if issue.get("type") == "bug")
-                
-            except Exception as e:
-                logger.error(f"Error reviewing file {file_info['filename']}: {str(e)}")
-                continue
-        
-        return {
-            "files": files_reviews,
-            "summary": {
-                "total_files": len(files_reviews),
-                "total_issues": total_issues,
-                "critical_issues": critical_issues
-            }
-        }
+            # Send prompt to OpenAI API
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0
+            )
+
+            # Extract text from response
+            content = response.choices[0].message.content
+            # Parse JSON safely
+            result = json.loads(content)
+            return result
+
+        except Exception as e:
+            logger.error(f"Error analyzing code: {e}")
+            return {"name": file_name, "issues": []}

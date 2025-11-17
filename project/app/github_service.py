@@ -1,90 +1,71 @@
 import requests
+from typing import Optional, Dict, List
 import logging
-from typing import List, Dict, Any
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 class GitHubService:
-    def __init__(self, github_token: str = None):
-        self.github_token = github_token or os.getenv("GITHUB_TOKEN")
+    """Service to interact with GitHub API"""
+    
+    def __init__(self, token: Optional[str] = None):
+        self.token = token
         self.base_url = "https://api.github.com"
-        self.session = requests.Session()
-        if self.github_token:
-            self.session.headers.update({
-                "Authorization": f"token {self.github_token}",
-                "Accept": "application/vnd.github.v3+json"
-            })
+        self.headers = self._get_headers()
     
-    def _parse_repo_url(self, repo_url: str) -> tuple:
-        """Parse GitHub repo URL to extract owner and repo"""
-        if "github.com" not in repo_url:
-            raise ValueError("Invalid GitHub URL")
-        
-        # Remove .git if present
-        repo_url = repo_url.rstrip("/").replace(".git", "")
-        
-        # Extract owner and repo
-        parts = repo_url.split("/")
-        owner = parts[-2]
-        repo = parts[-1]
-        
-        return owner, repo
+    def _get_headers(self) -> Dict:
+        """Get request headers"""
+        headers = {"Accept": "application/vnd.github.v3+json"}
+        if self.token:
+            headers["Authorization"] = f"token {self.token}"
+        return headers
     
-    def get_pr_files(self, repo_url: str, pr_number: int) -> List[Dict[str, Any]]:
-        """Get list of changed files in a PR"""
+    def get_pr_files(self, repo_url: str, pr_number: int) -> List[Dict]:
+        """Get PR files and changes"""
         try:
-            owner, repo = self._parse_repo_url(repo_url)
-            url = f"{self.base_url}/repos/{owner}/{repo}/pulls/{pr_number}/files"
+            # Extract owner and repo from URL
+            parts = repo_url.rstrip('/').split('/')
+            owner, repo = parts[-2], parts[-1]
             
-            response = self.session.get(url)
+            url = f"{self.base_url}/repos/{owner}/{repo}/pulls/{pr_number}/files"
+            response = requests.get(url, headers=self.headers, timeout=10)
             response.raise_for_status()
             
-            files = response.json()
-            logger.info(f"Fetched {len(files)} files from PR #{pr_number}")
-            return files
+            logger.info(f"Retrieved {len(response.json())} files for PR #{pr_number}")
+            return response.json()
         except Exception as e:
             logger.error(f"Error fetching PR files: {str(e)}")
-            raise
+            return []
     
-    def get_file_content(self, repo_url: str, file_path: str, ref: str = "HEAD") -> str:
-        """Get raw file content from repository"""
+    def get_file_content(self, repo_url: str, ref: str, file_path: str) -> Optional[str]:
+        """Get file content from GitHub"""
         try:
-            owner, repo = self._parse_repo_url(repo_url)
-            url = f"{self.base_url}/repos/{owner}/{repo}/contents/{file_path}?ref={ref}"
+            parts = repo_url.rstrip('/').split('/')
+            owner, repo = parts[-2], parts[-1]
             
-            response = self.session.get(url)
+            url = f"{self.base_url}/repos/{owner}/{repo}/contents/{file_path}?ref={ref}"
+            response = requests.get(url, headers=self.headers, timeout=10)
             response.raise_for_status()
             
-            # GitHub API returns base64 encoded content
             import base64
-            content = base64.b64decode(response.json()["content"]).decode("utf-8")
+            content = base64.b64decode(response.json()['content']).decode('utf-8')
             return content
         except Exception as e:
             logger.error(f"Error fetching file content: {str(e)}")
-            raise
+            return None
     
-    def get_pr_metadata(self, repo_url: str, pr_number: int) -> Dict[str, Any]:
-        """Get PR metadata"""
+    def get_pr_diff(self, repo_url: str, pr_number: int) -> Optional[str]:
+        """Get full PR diff"""
         try:
-            owner, repo = self._parse_repo_url(repo_url)
-            url = f"{self.base_url}/repos/{owner}/{repo}/pulls/{pr_number}"
+            parts = repo_url.rstrip('/').split('/')
+            owner, repo = parts[-2], parts[-1]
             
-            response = self.session.get(url)
+            url = f"{self.base_url}/repos/{owner}/{repo}/pulls/{pr_number}"
+            headers = self.headers.copy()
+            headers["Accept"] = "application/vnd.github.v3.diff"
+            response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
             
-            pr_data = response.json()
-            return {
-                "title": pr_data.get("title"),
-                "description": pr_data.get("body"),
-                "author": pr_data.get("user", {}).get("login"),
-                "state": pr_data.get("state"),
-                "created_at": pr_data.get("created_at"),
-                "updated_at": pr_data.get("updated_at")
-            }
+            return response.text
         except Exception as e:
-            logger.error(f"Error fetching PR metadata: {str(e)}")
-            raise
+            logger.error(f"Error fetching PR diff: {str(e)}")
+            return None

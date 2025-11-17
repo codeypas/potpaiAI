@@ -1,29 +1,32 @@
+from typing import Optional
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+import json
 import logging
-import uuid
 from datetime import datetime
 
 from app.database import get_db, init_db
-from app.models import CodeReviewTask, TaskStatus
-from app.tasks import analyze_pr_task
+from app.models import CodeReviewTask
+from app.tasks import analyze_github_pr, celery_app
+from app.config import settings
 
-
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
+# Initialize FastAPI
 app = FastAPI(
     title="AI Code Review System",
-    description="Autonomous AI-powered code review for GitHub PRs",
+    description="Autonomous agent for analyzing GitHub pull requests",
     version="1.0.0"
 )
 
-# CORS
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,111 +35,172 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Initialize database on startup
 @app.on_event("startup")
-def startup():
+async def startup():
     init_db()
     logger.info("Database initialized")
 
+# Request/Response Models
 class AnalyzePRRequest(BaseModel):
     repo_url: str
     pr_number: int
-    github_token: str = None
+    github_token: Optional[str] = None
 
-class TaskResponse(BaseModel):
+class TaskStatus(BaseModel):
     task_id: str
     status: str
-    message: str
+    created_at: datetime
+    updated_at: datetime
 
-class StatusResponse(BaseModel):
-    task_id: str
-    status: str
-    created_at: str
-    updated_at: str
-
-class ResultResponse(BaseModel):
+class TaskResult(BaseModel):
     task_id: str
     status: str
     results: dict = None
     error_message: str = None
 
-# Routes
-@app.get("/health", tags=["Health"])
-def health_check():
+# Endpoints
+@app.get("/health")
+async def health_check():
     """Health check endpoint"""
     return {
         "status": "ok",
         "service": "AI Code Review System",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "environment": settings.ENVIRONMENT
     }
 
-@app.post("/analyze-pr", response_model=TaskResponse, tags=["Analysis"])
-def analyze_pr(request: AnalyzePRRequest, db: Session = Depends(get_db)):
+@app.post("/analyze-pr")
+async def analyze_pr(request: AnalyzePRRequest, db: Session = Depends(get_db)):
     """
     Queue a PR for analysis
+    
+    Returns:
+    {
+        "task_id": "uuid",
+        "status": "pending",
+        "message": "PR analysis queued successfully"
+    }
     """
-    task_id = str(uuid.uuid4())
+    try:
+        # Validate repo URL
+        if "github.com" not in request.repo_url:
+            raise HTTPException(status_code=400, detail="Invalid GitHub repository URL")
+        
+        logger.info(f"Queuing analysis for {request.repo_url}#{request.pr_number}")
+        
+        # Create task in database
+        task = CodeReviewTask(
+            repo_url=request.repo_url,
+            pr_number=str(request.pr_number),
+            status="pending"
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+        
+        # Queue Celery task
+        analyze_github_pr.delay(
+            task.task_id,
+            request.repo_url,
+            request.pr_number,
+            request.github_token
+        )
+        
+        return {
+            "task_id": task.task_id,
+            "status": "pending",
+            "message": "PR analysis queued successfully"
+        }
+    
+    except Exception as e:
+        logger.error(f"Error queuing PR analysis: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    task = CodeReviewTask(
-        id=task_id,
-        repo_url=request.repo_url,
-        pr_number=request.pr_number,
-        status=TaskStatus.PENDING,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
-    )
-    db.add(task)
-    db.commit()
-    db.refresh(task)
-
-    celery_task = analyze_pr_task.delay(task_id, request.repo_url, request.pr_number, request.github_token)
-    logger.info(f"Queued PR analysis task: {task_id} (Celery ID: {celery_task.id})")
-
-    return TaskResponse(
-        task_id=task_id,
-        status=task.status.value,
-        message="PR analysis has been queued"
-    )
-
-@app.get("/task-status/{task_id}", response_model=StatusResponse, tags=["Analysis"])
-def get_task_status(task_id: str, db: Session = Depends(get_db)):
+@app.get("/status/{task_id}")
+async def get_status(task_id: str, db: Session = Depends(get_db)):
     """
-    Get the current status of a queued task
+    Get status of an analysis task
+    
+    Returns:
+    {
+        "task_id": "uuid",
+        "status": "pending|processing|completed|failed",
+        "created_at": "timestamp",
+        "updated_at": "timestamp"
+    }
     """
-    task = db.query(CodeReviewTask).filter(CodeReviewTask.id == task_id).first()
+    task = db.query(CodeReviewTask).filter(CodeReviewTask.task_id == task_id).first()
+    
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    
+    return {
+        "task_id": task.task_id,
+        "status": task.status,
+        "created_at": task.created_at,
+        "updated_at": task.updated_at
+    }
 
-    return StatusResponse(
-        task_id=task.id,
-        status=task.status.value,
-        created_at=task.created_at.isoformat(),
-        updated_at=(task.updated_at.isoformat() if task.updated_at else "")
-    )
-
-@app.get("/task-result/{task_id}", response_model=ResultResponse, tags=["Analysis"])
-def get_task_result(task_id: str, db: Session = Depends(get_db)):
+@app.get("/results/{task_id}")
+async def get_results(task_id: str, db: Session = Depends(get_db)):
     """
-    Get the results of a completed task
+    Get analysis results for a completed task
+    
+    Returns:
+    {
+        "task_id": "uuid",
+        "status": "completed|failed|pending",
+        "results": {
+            "files": [...],
+            "summary": {...}
+        },
+        "error_message": null
+    }
     """
-    task = db.query(CodeReviewTask).filter(CodeReviewTask.id == task_id).first()
+    task = db.query(CodeReviewTask).filter(CodeReviewTask.task_id == task_id).first()
+    
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    
+    result = {
+        "task_id": task.task_id,
+        "status": task.status,
+        "error_message": task.error_message
+    }
+    
+    if task.results:
+        result["results"] = json.loads(task.results)
+    
+    return result
 
-    if task.status == TaskStatus.COMPLETED:
-        return ResultResponse(
-            task_id=task.id,
-            status=task.status.value,
-            results=task.results
-        )
-    elif task.status == TaskStatus.FAILED:
-        return ResultResponse(
-            task_id=task.id,
-            status=task.status.value,
-            error_message=task.error_message
-        )
-    else:
-        return ResultResponse(
-            task_id=task.id,
-            status=task.status.value,
-            error_message="Task is still processing"
-        )
+@app.get("/tasks")
+async def list_tasks(db: Session = Depends(get_db), limit: int = 10):
+    """
+    List recent tasks
+    
+    Returns: List of tasks with their status
+    """
+    tasks = db.query(CodeReviewTask).order_by(CodeReviewTask.created_at.desc()).limit(limit).all()
+    
+    return [
+        {
+            "task_id": task.task_id,
+            "repo_url": task.repo_url,
+            "pr_number": task.pr_number,
+            "status": task.status,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at
+        }
+        for task in tasks
+    ]
+
+# Root endpoint
+@app.get("/")
+async def root():
+    """Root endpoint with API documentation link"""
+    return {
+        "message": "AI Code Review System API",
+        "documentation": "http://localhost:8000/docs",
+        "status": "running"
+    }

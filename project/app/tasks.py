@@ -1,86 +1,89 @@
-import logging
 from celery import Celery
-from dotenv import load_dotenv
-import os
+from app.config import settings
+from app.github_service import GitHubService
+from app.ai_reviewer import AICodeReviewer
+from app.database import SessionLocal
+from app.models import CodeReviewTask
 import json
-from datetime import datetime
-from sqlalchemy.orm import Session
-
-load_dotenv()
-
-# Initialize Celery
-celery_app = Celery(
-    "code_review",
-    broker=os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0"),
-    backend=os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
-)
-
-celery_app.conf.update(
-    task_serializer="json",
-    accept_content=["json"],
-    result_serializer="json",
-    timezone="UTC",
-    enable_utc=True,
-    task_track_started=True,
-    task_time_limit=30 * 60, 
-)
+import logging
 
 logger = logging.getLogger(__name__)
 
-@celery_app.task(bind=True, name="analyze_pr_task")
-def analyze_pr_task(self, task_id: str, repo_url: str, pr_number: int, github_token: str = None):
-    """Celery task to analyze PR asynchronously"""
+# Configure Celery
+celery_app = Celery(
+    'code_review_system',
+    broker=settings.CELERY_BROKER_URL,
+    backend=settings.CELERY_RESULT_BACKEND
+)
+
+celery_app.conf.update(
+    task_serializer='json',
+    accept_content=['json'],
+    result_serializer='json',
+    timezone='UTC',
+    enable_utc=True,
+)
+
+@celery_app.task(bind=True, name='analyze_github_pr')
+def analyze_github_pr(self, task_id: str, repo_url: str, pr_number: int, github_token: str = None):
+    """
+    Celery task: Analyze GitHub PR
+    Updates task status in database
+    """
+    db = SessionLocal()
+    
     try:
-        from app.database import SessionLocal
-        from app.models import CodeReviewTask, TaskStatus
-        from app.github_service import GitHubService
-        from app.ai_reviewer import AICodeReviewer
+        # Update status to processing
+        task = db.query(CodeReviewTask).filter(CodeReviewTask.task_id == task_id).first()
+        if task:
+            task.status = "processing"
+            db.commit()
         
-        db = SessionLocal()
+        logger.info(f"Starting analysis for PR: {repo_url}#{pr_number}")
         
-        task = db.query(CodeReviewTask).filter_by(task_id=task_id).first()
-        task.status = TaskStatus.PROCESSING
-        task.updated_at = datetime.utcnow()
-        db.commit()
-        
-        logger.info(f"Processing task {task_id}")
-        
+        # Fetch PR files
         gh_service = GitHubService(github_token)
         pr_files = gh_service.get_pr_files(repo_url, pr_number)
         
-        pr_metadata = gh_service.get_pr_metadata(repo_url, pr_number)
+        if not pr_files:
+            raise Exception("No files found in PR")
         
-        reviewer = AICodeReviewer()
-        results = reviewer.review_pr_files(pr_files)
+        # Get file contents
+        file_contents = {}
+        for file_data in pr_files[:10]:  # Limit to 10 files
+            file_name = file_data.get("filename", "")
+            if AICodeReviewer._is_code_file(file_name):
+                content = gh_service.get_file_content(repo_url, f"pull/{pr_number}/head", file_name)
+                if content:
+                    file_contents[file_name] = content
         
-        final_result = {
-            "task_id": task_id,
-            "status": "completed",
-            "pr_metadata": pr_metadata,
-            "results": results
-        }
+        logger.info(f"Retrieved content for {len(file_contents)} files")
         
-        task.status = TaskStatus.COMPLETED
-        task.result = json.dumps(final_result)
-        task.updated_at = datetime.utcnow()
-        db.commit()
+        # Run AI analysis
+        if not settings.OPENAI_API_KEY:
+            raise Exception("OPENAI_API_KEY not configured")
         
-        logger.info(f"Task {task_id} completed successfully")
+        ai_reviewer = AICodeReviewer(settings.OPENAI_API_KEY)
+        analysis_results = ai_reviewer.analyze_pr(pr_files, file_contents)
         
-        return final_result
+        # Update task with results
+        task = db.query(CodeReviewTask).filter(CodeReviewTask.task_id == task_id).first()
+        if task:
+            task.status = "completed"
+            task.results = json.dumps(analysis_results)
+            db.commit()
         
+        logger.info(f"Analysis completed for task {task_id}")
+        return analysis_results
+    
     except Exception as e:
-        logger.error(f"Error in analyze_pr_task: {str(e)}")
-        
-        try:
-            db = SessionLocal()
-            task = db.query(CodeReviewTask).filter_by(task_id=task_id).first()
-            if task:
-                task.status = TaskStatus.FAILED
-                task.error_message = str(e)
-                task.updated_at = datetime.utcnow()
-                db.commit()
-        except:
-            pass
-        
+        logger.error(f"Error in task {task_id}: {str(e)}")
+        task = db.query(CodeReviewTask).filter(CodeReviewTask.task_id == task_id).first()
+        if task:
+            task.status = "failed"
+            task.error_message = str(e)
+            db.commit()
         raise
+    
+    finally:
+        db.close()

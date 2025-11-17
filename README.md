@@ -83,6 +83,18 @@ curl -X POST "http://localhost:8000/analyze-pr" \
 
 
 ```
+
+**2. Check task status**
+```bash
+curl "http://localhost:8000/status/<task_id>"
+```
+
+**3. Get analysis results (after 60–120 seconds)**
+```bash
+curl "http://localhost:8000/results/<task_id>"
+```
+
+Expected result format: JSON with file issues, summary, and suggestions.
 ---
 
 
@@ -117,3 +129,19 @@ curl -X POST "http://localhost:8000/analyze-pr" \
 ```
 ---
 
+## Dashboard and API  Docs
+
+**Dashboard:** http://localhost:8000
+
+- Displays tasks, statistics, and results
+
+**API Docs:** http://localhost:8000/docs
+
+- Swagger UI  Only shows API endpoints
+---
+## 📫 Contact
+
+Got feedback or want to connect?
+
+📌 [GitHub Profile](https://github.com/codeypas)  
+📧 Contact: bjbestintheworld@gmail.com  

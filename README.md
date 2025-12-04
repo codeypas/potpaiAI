@@ -132,12 +132,15 @@ Expected result format: JSON with file issues, summary, and suggestions.
 ## Dashboard and API  Docs
 
 **Dashboard:** http://localhost:8000
-
+---
+<img src="https://raw.githubusercontent.com/codeypas/potpieAI/main/images/2%20UI.png" width="40%" alt="Dashboard Screenshot" />
 - Displays tasks, statistics, and results
 
 **API Docs:** http://localhost:8000/docs
-
+---
+<img src="https://raw.githubusercontent.com/codeypas/potpieAI/main/images/1%20docs.png" width="40%" alt="API Docs Screenshot" />
 - Swagger UI  Only shows API endpoints
+
 ---
 ## 📫 Contact
 

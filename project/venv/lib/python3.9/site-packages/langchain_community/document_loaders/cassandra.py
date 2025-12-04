@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import (
     TYPE_CHECKING,
     Any,
+    AsyncIterator,
     Callable,
     Iterator,
-    List,
     Optional,
     Sequence,
     Union,
@@ -14,6 +14,7 @@ from typing import (
 from langchain_core.documents import Document
 
 from langchain_community.document_loaders.base import BaseLoader
+from langchain_community.utilities.cassandra import aexecute_cql
 
 _NOT_SET = object()
 
@@ -56,8 +57,10 @@ class CassandraLoader(BaseLoader):
                 (do not use together with the table parameter)
             page_content_mapper: a function to convert a row to string page content.
                 Defaults to the str representation of the row.
+            metadata_mapper: a function to convert a row to document metadata.
             query_parameters: The query parameters used when calling session.execute .
             query_timeout: The query timeout used when calling session.execute .
+            query_trace: Whether to use tracing when calling session.execute .
             query_custom_payload: The query custom_payload used when calling
                 session.execute .
             query_execution_profile: The query execution_profile used when calling
@@ -106,11 +109,16 @@ class CassandraLoader(BaseLoader):
         if query_execution_profile is not _NOT_SET:
             self.query_kwargs["execution_profile"] = query_execution_profile
 
-    def load(self) -> List[Document]:
-        return list(self.lazy_load())
-
     def lazy_load(self) -> Iterator[Document]:
         for row in self.session.execute(self.query, **self.query_kwargs):
+            metadata = self.metadata.copy()
+            metadata.update(self.metadata_mapper(row))
+            yield Document(
+                page_content=self.page_content_mapper(row), metadata=metadata
+            )
+
+    async def alazy_load(self) -> AsyncIterator[Document]:
+        for row in await aexecute_cql(self.session, self.query, **self.query_kwargs):
             metadata = self.metadata.copy()
             metadata.update(self.metadata_mapper(row))
             yield Document(

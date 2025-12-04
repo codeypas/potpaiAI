@@ -41,16 +41,20 @@ pip install -r requirements.txt
 
 # 6. Set up MySQL database
 
-# 7. Start Redis server
+# 7. Start Redis server in Terminal 1
 redis-server
 
-# 8. Start Celery worker in Terminal 1
+# 8. Start Celery worker in Terminal 2
+source venv/bin/activate
 celery -A app.tasks worker --loglevel=info
 
-# 9. Start FastAPI server in Terminal 2
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# 9. Start Database and FastAPI server in Terminal 3
+brew services start mysql
 
-# 10. Test API
+source venv/bin/activate
+python3 -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+# 10. Test API in Terminal 4
 python test_api.py
 
 ```
@@ -134,11 +138,13 @@ Expected result format: JSON with file issues, summary, and suggestions.
 **Dashboard:** http://localhost:8000
 ---
 <img src="https://raw.githubusercontent.com/codeypas/potpieAI/main/images/2%20UI.png" width="40%" alt="Dashboard Screenshot" />
+<img src="https://raw.githubusercontent.com/codeypas/potpieAI/main/images/Screenshot 2025-12-05 at 01.38.42.png" width="40%" alt="Dashboard Screenshot" />
 - Displays tasks, statistics, and results
 
 **API Docs:** http://localhost:8000/docs
 ---
 <img src="https://raw.githubusercontent.com/codeypas/potpieAI/main/images/1%20docs.png" width="40%" alt="API Docs Screenshot" />
+<img src="https://raw.githubusercontent.com/codeypas/potpieAI/main/images/Screenshot 2025-12-05 at 01.35.50.png" width="40%" alt="Dashboard Screenshot" />
 - Swagger UI  Only shows API endpoints
 
 ---

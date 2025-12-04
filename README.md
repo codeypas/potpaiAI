@@ -98,7 +98,6 @@ curl "http://localhost:8000/status/<task_id>"
 curl "http://localhost:8000/results/<task_id>"
 ```
 
-Expected result format: JSON with file issues, summary, and suggestions.
 ---
 
 
